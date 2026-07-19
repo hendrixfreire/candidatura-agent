@@ -89,6 +89,11 @@ def main() -> int:
                         resolution_source="authenticated_linkedin_apply_link",
                     )
                 except ValueError:
+                    db.mark_resolution_failed(
+                        int(job["id"]),
+                        "URL oficial encontrada pelo botão LinkedIn, mas ATS não suportado",
+                        retry_hours=72,
+                    )
                     outcomes.append({"job_id": job["id"], "status": "unsupported_ats"})
                     continue
                 outcomes.append({"job_id": job["id"], "status": "resolved", "ats": ats})
