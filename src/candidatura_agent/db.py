@@ -216,6 +216,24 @@ class Database:
             )
             return [dict(row) for row in rows]
 
+    def invalidate_job_resolution(self, job_id: int, error: str, retry_hours: int = 72) -> None:
+        """Remove uma resolução que não termina em formulário automatizável."""
+        modifier = f"+{max(1, int(retry_hours))} hours"
+        with self.connect() as conn:
+            conn.execute(
+                """UPDATE jobs SET apply_url=NULL,ats=NULL,resume_path=NULL,resolution_source=NULL,
+                resolved_at=NULL,resolution_attempts=resolution_attempts+1,
+                resolution_last_error=?,resolution_retry_at=datetime('now','localtime',?),
+                updated_at=datetime('now','localtime') WHERE id=?""",
+                (error[:500], modifier, job_id),
+            )
+            conn.execute(
+                "INSERT INTO events(job_id,kind,payload) VALUES (?,?,?)",
+                (job_id, "apply_url_invalidated", json.dumps({
+                    "error": error[:500], "retry_hours": max(1, int(retry_hours)),
+                }, ensure_ascii=False)),
+            )
+
     def mark_resolution_failed(self, job_id: int, error: str, retry_hours: int = 24) -> None:
         """Adia nova busca de URL sem bloquear o restante da fila."""
         modifier = f"+{max(1, int(retry_hours))} hours"

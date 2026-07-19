@@ -165,6 +165,30 @@ def test_record_resolution_derives_ats_and_record_resume_requires_pdf(tmp_path: 
     assert db.list_jobs()[0]["resume_path"] == str(valid.resolve())
 
 
+def test_invalidating_resolution_removes_wrong_url_ats_and_resume(tmp_path: Path):
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    job_id = db.upsert_job({
+        "title": "Data Analyst", "company": "Acme", "location": "Brazil",
+        "source_url": "https://www.linkedin.com/jobs/view/789", "status": "qualified",
+    })
+    db.set_job_resolution(
+        job_id, apply_url="https://job-boards.greenhouse.io/acme/jobs/789",
+        ats="greenhouse", company="Acme", resolution_source="exact_web_search",
+    )
+    resume = tmp_path / "cv.pdf"
+    resume.write_bytes(b"%PDF-1.4\n%%EOF\n")
+    db.set_job_resume(job_id, str(resume))
+
+    db.invalidate_job_resolution(job_id, "URL redireciona para página sem formulário")
+
+    job = next(item for item in db.list_jobs() if item["id"] == job_id)
+    assert job["apply_url"] is None
+    assert job["ats"] is None
+    assert job["resume_path"] is None
+    assert job["resolution_last_error"] == "URL redireciona para página sem formulário"
+
+
 def test_failed_resolution_enters_cooldown_without_blocking_next_job(tmp_path: Path):
     db = Database(tmp_path / "state.db")
     db.initialize()
