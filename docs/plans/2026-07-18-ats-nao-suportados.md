@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python, SQLite, Playwright, pytest, Hermes cron e `computer_use` apenas para descoberta visual de URL.
 
+**Procedural memory:** todo ATS/formulário novo deve usar a skill `ats-form-learning`. Depois de aprendizagem verificada, ela cria/atualiza uma skill filha `ats-<plataforma>-form` com o fluxo, bloqueios, testes e sinais de confirmação reutilizáveis.
+
 ---
 
 ## Evidência que motivou o plano
