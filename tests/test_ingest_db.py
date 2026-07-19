@@ -1,5 +1,8 @@
 import json
+import sqlite3
 from pathlib import Path
+
+import pytest
 
 from candidatura_agent.db import Database
 from candidatura_agent.ingest import ingest_linkedin_json
@@ -83,3 +86,14 @@ def test_tailored_resume_assets_are_persisted_and_gate_queue(tmp_path: Path):
     assert queued[0]["resume_path"] == "/tmp/cv-tailored.pdf"
     assert queued[0]["apply_url"].startswith("https://job-boards.greenhouse.io/")
     assert db.cv_queue(limit=10) == []
+
+
+def test_database_context_closes_sqlite_connection_after_operation(tmp_path: Path):
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+
+    with db.connect() as conn:
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        conn.execute("SELECT 1")

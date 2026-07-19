@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""Extrai destinos Apply externos de vagas LinkedIn em uma sessão autenticada.
+
+Conecta apenas ao contexto dedicado em localhost:9226. Quando não há sessão
+válida, encerra silenciosamente e não altera o banco.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
+
+from candidatura_agent.assets import record_job_resolution
+from candidatura_agent.db import Database
+from candidatura_agent.linkedin_apply import select_offsite_apply_url
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def main() -> int:
+    config = json.loads((ROOT / "config.json").read_text())
+    db_path = Path(config["database"])
+    if not db_path.is_absolute():
+        db_path = ROOT / db_path
+    db = Database(db_path)
+    db.initialize()
+
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9226")
+            context = browser.contexts[0]
+            page = context.pages[0] if context.pages else context.new_page()
+            if page.locator('input[type=password]').count():
+                return 0
+            outcomes = []
+            for job in db.asset_queue(limit=10, stage="resolve"):
+                page.goto(job["source_url"], wait_until="domcontentloaded", timeout=90_000)
+                anchors = page.locator("a[href], [data-url], [data-apply-url]").evaluate_all(
+                    """els => els.map(el => ({
+                        href: el.href || '',
+                        url: el.dataset.applyUrl || el.dataset.url || '',
+                        text: el.innerText || el.getAttribute('aria-label') || ''
+                    }))"""
+                )
+                url = select_offsite_apply_url(anchors)
+                if url is None:
+                    outcomes.append({"job_id": job["id"], "status": "no_offsite_apply_url"})
+                    continue
+                try:
+                    ats = record_job_resolution(
+                        db, int(job["id"]), url, company=job["company"],
+                        resolution_source="authenticated_linkedin_apply_link",
+                    )
+                except ValueError:
+                    outcomes.append({"job_id": job["id"], "status": "unsupported_ats"})
+                    continue
+                outcomes.append({"job_id": job["id"], "status": "resolved", "ats": ats})
+            if outcomes:
+                print(json.dumps(outcomes, ensure_ascii=False))
+    except Exception:
+        # Browser/session inexistente não é falha do pipeline e não deve gerar ruído.
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

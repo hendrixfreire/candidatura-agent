@@ -30,6 +30,60 @@ class ApplicationResult:
     screenshot: str | None = None
 
 
+def _dispatch_react_events(field: Any) -> None:
+    """Dispatch input + change events so React/controlled forms register the value."""
+    field.evaluate("""el => {
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value'
+        )?.set;
+        const nativeTextareaValueSetter = Object.getOwnPropertyDescriptor(
+            window.HTMLTextAreaElement.prototype, 'value'
+        )?.set;
+        if (nativeInputValueSetter && el instanceof HTMLInputElement) {
+            nativeInputValueSetter.call(el, el.value);
+        } else if (nativeTextareaValueSetter && el instanceof HTMLTextAreaElement) {
+            nativeTextareaValueSetter.call(el, el.value);
+        }
+        el.dispatchEvent(new Event('input', {bubbles: true}));
+        el.dispatchEvent(new Event('change', {bubbles: true}));
+    }""")
+
+
+def _fill_react_field(field: Any, value: str) -> None:
+    """Fill a text input/textarea in a way that React controlled components detect.
+
+    Strategy:
+    1. Focus the field, clear it, then type the value character by character
+       using press_sequentially which dispatches real keyboard events.
+    2. As a fallback, use native value setter + dispatchEvent.
+    """
+    # Step 1: focus and clear
+    field.focus()
+    field.evaluate("el => { el.select(); }")
+    # Step 2: type character by character — this triggers React's event handlers
+    try:
+        field.press_sequentially(str(value), delay=10)
+    except Exception:
+        # Fallback: native setter approach
+        field.evaluate("""(el, val) => {
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLInputElement.prototype, 'value'
+            )?.set;
+            const nativeTextareaValueSetter = Object.getOwnPropertyDescriptor(
+                window.HTMLTextAreaElement.prototype, 'value'
+            )?.set;
+            if (nativeInputValueSetter && el instanceof HTMLInputElement) {
+                nativeInputValueSetter.call(el, val);
+            } else if (nativeTextareaValueSetter && el instanceof HTMLTextAreaElement) {
+                nativeTextareaValueSetter.call(el, val);
+            } else {
+                el.value = val;
+            }
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+        }""", value)
+
+
 def _field_label(locator: Any) -> str:
     return locator.evaluate(
         r"""el => {
@@ -73,6 +127,19 @@ def fill_known_fields(page: Any, profile: dict[str, Any]) -> FillResult:
                 if group_checked:
                     continue
             label = _field_label(field)
+            # Greenhouse/React Select uses hidden text inputs alongside visible
+            # dropdown components.  When a visible dropdown (preceding sibling or
+            # parent-controlled input) already has a value set, the hidden control
+            # input with empty label should not block.  Skip required fields that
+            # have no label AND no name/placeholder — they are React internal.
+            if (not label.strip() and field_type not in ("file", "checkbox", "radio")
+                    and not field.get_attribute("placeholder")):
+                field_id = field.get_attribute("id") or ""
+                field_name = field.get_attribute("name") or ""
+                # Greenhouse control inputs often have no id/name and are siblings
+                # of the visible input. Skip them if they are required but labelless.
+                if not field_id and not field_name and field_type in ("text", ""):
+                    continue
             rule = classify_field(label)
             required = field.get_attribute("required") is not None or field.get_attribute("aria-required") == "true"
             if required and field_type not in ("file", "checkbox", "radio"):
@@ -95,29 +162,91 @@ def fill_known_fields(page: Any, profile: dict[str, Any]) -> FillResult:
                     blockers.append(f"arquivo não encontrado: {path}")
                     continue
                 field.set_input_files(str(path))
+                # Verify upload: check if files are attached to the input
                 try:
-                    upload_still_on_input = field.evaluate(
-                        "el => el.isConnected && el.files && el.files.length === 1"
+                    upload_ok = field.evaluate(
+                        "el => el.isConnected && el.files && el.files.length >= 1"
                     )
                 except Exception:
-                    upload_still_on_input = False
-                if not upload_still_on_input:
-                    page.get_by_text(path.name, exact=True).wait_for(timeout=5000)
-            elif tag == "select":
-                field.select_option(label=str(value))
-            elif field.get_attribute("role") == "combobox":
-                field.fill(str(value))
+                    upload_ok = False
+                if not upload_ok:
+                    # React may have re-rendered and replaced the input element;
+                    # check if filename appears anywhere on the page as fallback
+                    try:
+                        page.get_by_text(path.name, exact=True).wait_for(timeout=5000)
+                        upload_ok = True
+                    except Exception:
+                        uploaded_visible = page.locator(f"text={path.name}").count() > 0
+                        if not uploaded_visible:
+                            blockers.append(f"upload não confirmado: {path.name}")
+                            continue
+                filled.append(rule.key or label)
+                continue
+            # Detect React Select comboboxes FIRST — they look like text inputs
+            # but need click-type-select interaction
+            field_role = field.get_attribute("role")
+            aria_autocomplete = field.get_attribute("aria-autocomplete")
+            is_react_select = field_role == "combobox" or aria_autocomplete == "list"
+
+            if is_react_select:
+                # React Select / Downshift pattern: click, type, wait for options, select
+                field.click()
+                page.wait_for_timeout(300)
+                # Clear any existing text and type new value
+                field.press("Control+a")
+                field.press("Backspace")
+                # ``query_selector_all`` yields ElementHandle objects. Older
+                # Playwright versions expose ``type`` on those handles but not
+                # Locator-only ``press_sequentially``.
+                if hasattr(field, "press_sequentially"):
+                    field.press_sequentially(str(value), delay=20)
+                else:
+                    field.type(str(value), delay=20)
+                page.wait_for_timeout(500)
+                # Try to select from the dropdown
                 try:
-                    page.locator('[role="option"]:visible').first.wait_for(timeout=2500)
+                    options = page.locator('[role="option"]:visible')
+                    if options.count() == 1:
+                        # Single match — click it
+                        options.first.click()
+                    elif options.count() > 1:
+                        # Multiple matches — click the first one
+                        options.first.click()
+                    else:
+                        # No visible options — try ArrowDown + Enter
+                        field.press("ArrowDown")
+                        field.press("Enter")
                 except Exception:
-                    pass
-                field.press("ArrowDown")
-                field.press("Enter")
+                    field.press("ArrowDown")
+                    field.press("Enter")
+                page.wait_for_timeout(300)
+            elif tag == "select":
+                # Native HTML select
+                # Try label first, then value, then index-based for React selects
+                try:
+                    field.select_option(label=str(value))
+                except Exception:
+                    try:
+                        field.select_option(value=str(value))
+                    except Exception:
+                        # Fallback: iterate options to find matching text
+                        field.evaluate("""(el, target) => {
+                            for (const opt of el.options) {
+                                if (opt.text.trim().toLowerCase().includes(target.toLowerCase())) {
+                                    el.value = opt.value;
+                                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                                    return;
+                                }
+                            }
+                        }""", str(value))
+                _dispatch_react_events(field)
             elif field_type in ("checkbox", "radio"):
                 if bool(value):
                     field.check()
+                    _dispatch_react_events(field)
             else:
-                field.fill(str(value))
+                # Regular text input / textarea — use React-aware fill
+                _fill_react_field(field, str(value))
             filled.append(rule.key or label)
         except Exception as exc:  # React pode substituir o nó durante o preenchimento.
             message = str(exc).lower()

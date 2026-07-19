@@ -59,6 +59,26 @@ def test_enrich_descriptions_only_fetches_missing_descriptions(tmp_path: Path):
     assert next(j for j in db.list_jobs() if j["id"] == first)["description"] == "Python SQL BigQuery"
 
 
+def test_queue_payload_can_select_only_resume_stage(tmp_path: Path):
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    unresolved = db.upsert_job({
+        "external_id": "url-1", "title": "Resolver URL", "company": "Acme", "location": "Brazil",
+        "source_url": "https://www.linkedin.com/jobs/view/url-1", "status": "qualified", "fit_score": 90,
+    })
+    resume = db.upsert_job({
+        "external_id": "resume-1", "title": "Gerar CV", "company": "Beta", "location": "Brazil",
+        "source_url": "https://www.linkedin.com/jobs/view/resume-1", "status": "qualified", "fit_score": 80,
+        "apply_url": "https://jobs.lever.co/beta/resume-1", "ats": "lever",
+    })
+
+    payload = queue_payload(db, limit=10, stage="resume")
+
+    assert [item["id"] for item in payload] == [resume]
+    assert payload[0]["asset_stage"] == "resume"
+    assert unresolved not in [item["id"] for item in payload]
+
+
 def test_record_resolution_failure_returns_retry_metadata(tmp_path: Path):
     db = Database(tmp_path / "state.db")
     db.initialize()

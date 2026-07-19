@@ -4,7 +4,7 @@
 
 ## Resumo em uma frase
 
-O sistema busca vagas no LinkedIn, grava tudo localmente, calcula aderência, prepara uma fila e mostra o estado num dashboard; o preenchimento real ainda está em `dry_run` e o envio automático permanece desligado.
+O sistema busca vagas no LinkedIn, grava tudo localmente, calcula aderência, resolve URLs oficiais, prepara uma fila e mostra o estado num dashboard. A resolução de URL usa busca pública e, quando necessário, o Brave autenticado apenas para descobrir o destino externo do botão Aplicar.
 
 ## Onde cada coisa está
 
@@ -164,6 +164,7 @@ data/candidaturas.db
 | `linkedin-job-search` | 08:00, 13:00 e 18:00 | Telegram Home | Ativa |
 | `candidatura-hourly` | de hora em hora, 08:30–18:30 | Local | Ativa |
 | `candidatura-asset-prep` | de hora em hora, 08:45–18:45 | Local | Ativa |
+| `candidatura-url-resolver` | 08:00–18:30, a cada 30 min | Local | Ativa — busca pública e fallback visual no Brave |
 | `candidatura-daily-report` | 20:15 | Esta conversa | Ativa |
 | Dashboard via `launchd` | contínuo | localhost:8765 | Rodando |
 
@@ -178,6 +179,7 @@ Há duas rotinas que consultam o scraper: a antiga envia vagas ao Telegram e a n
 - fila de qualificadas;
 - enriquecimento das descrições do LinkedIn;
 - resolução conservadora de URL oficial/ATS, com cooldown quando não há evidência;
+- fallback visual no Brave autenticado para revelar apenas a URL externa do botão Aplicar;
 - geração e validação de um CV específico por execução horária;
 - dashboard e relatório diário;
 - navegador Brave em `dry_run`, com Chrome como fallback;
@@ -191,11 +193,12 @@ Há duas rotinas que consultam o scraper: a antiga envia vagas ao Telegram e a n
 
 ## O que ainda NÃO é automático
 
-- resolver URLs que não aparecem em página oficial ou ATS indexado;
+- automatizar formulários de ATS sem adaptador validado;
 - responder perguntas legais, sensíveis ou factuais ainda não aprovadas;
 - superar login expirado, CAPTCHA ou 2FA sem participação humana;
-- enviar candidatura: `auto_submit` permanece desligado;
-- liberar ATS além do Greenhouse para envio real; os demais estão disponíveis apenas para `dry_run`.
+- liberar ATS além da allowlist de envio real; os demais podem estar em descoberta ou `dry_run`.
+
+A estratégia de evolução dos ATS está em [`docs/plans/2026-07-18-ats-nao-suportados.md`](plans/2026-07-18-ats-nao-suportados.md). O protocolo de descoberta de URL está em [`docs/RESOLUCAO-DE-URL.md`](RESOLUCAO-DE-URL.md).
 
 Configuração de segurança atual:
 
@@ -203,7 +206,7 @@ Configuração de segurança atual:
 {
   "daily_target_min": 10,
   "browser_enabled": true,
-  "auto_submit": false,
+  "auto_submit": true,
   "allowed_ats": ["greenhouse"],
   "dry_run_allowed_ats": ["greenhouse", "lever", "ashby", "gupy", "peopleforce", "factorial"],
   "notification_target": "discord:1526233025346666617:1526233025346666617"
@@ -233,7 +236,7 @@ Link da vaga: <URL externa>
 Origem: <URL do LinkedIn, quando diferente>
 ```
 
-Portanto, o cron horário já prepara ativos e executa simulações seguras; candidaturas reais continuam bloqueadas porque `auto_submit=false` e somente Greenhouse está na allowlist de envio.
+O cron horário prepara ativos e processa candidatos permitidos pela allowlist. O envio real está habilitado exclusivamente para Greenhouse; ATS fora da allowlist permanecem bloqueados até passarem por `dry_run`, testes e validação explícita.
 
 ## Estado verificado em 14/07/2026
 

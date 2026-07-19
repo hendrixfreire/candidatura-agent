@@ -75,6 +75,12 @@ def test_fill_known_fields_selects_custom_combobox_and_checkbox_group():
     <script>
       const field = document.querySelector('#english');
       field.addEventListener('focus', () => options.hidden = false);
+      // React Select-like: clicking an option sets the value
+      document.querySelector('[role="option"]').addEventListener('click', () => {
+        field.value = 'Advanced';
+        options.hidden = true;
+      });
+      // Also support keyboard Enter for accessibility
       field.addEventListener('keydown', event => {
         if (event.key === 'Enter') { field.value = 'Advanced'; options.hidden = true; }
       });
