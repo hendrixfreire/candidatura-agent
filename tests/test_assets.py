@@ -120,6 +120,26 @@ def test_enrich_job_description_fetches_guest_endpoint(tmp_path: Path):
     assert next(job for job in db.list_jobs() if job["id"] == job_id)["description"] == description
 
 
+def test_record_resolution_rejects_a_supported_url_that_redirects_to_an_unknown_ats(tmp_path: Path):
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    job_id = db.upsert_job({
+        "title": "Data Analyst", "company": "Acme", "location": "Brazil",
+        "source_url": "https://www.linkedin.com/jobs/view/456", "status": "qualified",
+    })
+
+    with pytest.raises(ValueError, match="ATS não reconhecido"):
+        record_job_resolution(
+            db, job_id, "https://job-boards.greenhouse.io/acme/jobs/456", company="Acme",
+            resolution_source="exact_web_search",
+            resolve_final_url=lambda _: "https://careers.acme.example/jobs/456",
+        )
+
+    job = next(item for item in db.list_jobs() if item["id"] == job_id)
+    assert job["apply_url"] is None
+    assert job["ats"] is None
+
+
 def test_record_resolution_derives_ats_and_record_resume_requires_pdf(tmp_path: Path):
     db = Database(tmp_path / "state.db")
     db.initialize()
@@ -130,6 +150,7 @@ def test_record_resolution_derives_ats_and_record_resume_requires_pdf(tmp_path: 
     ats = record_job_resolution(
         db, job_id, "https://jobs.lever.co/acme/abc", company="Acme",
         resolution_source="exact_web_search",
+        resolve_final_url=lambda url: url,
     )
     assert ats == "lever"
 

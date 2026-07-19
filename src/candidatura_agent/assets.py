@@ -103,13 +103,21 @@ def enrich_job_description(
     return description
 
 
+def _resolve_final_url(url: str) -> str:
+    """Segue redirects HTTP antes de aceitar um destino de candidatura."""
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0 candidatura-agent/1.0"})
+    with urlopen(request, timeout=20) as response:
+        return response.geturl()
+
+
 def record_job_resolution(
     db: Database, job_id: int, apply_url: str, *, company: str | None,
-    resolution_source: str,
+    resolution_source: str, resolve_final_url: Callable[[str], str] = _resolve_final_url,
 ) -> str:
-    ats = validate_external_apply_url(apply_url)
+    final_url = resolve_final_url(apply_url)
+    ats = validate_external_apply_url(final_url)
     db.set_job_resolution(
-        job_id, apply_url=apply_url, ats=ats, company=company,
+        job_id, apply_url=final_url, ats=ats, company=company,
         resolution_source=resolution_source,
     )
     return ats
