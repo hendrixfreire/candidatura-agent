@@ -9,14 +9,45 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import TimeoutError, sync_playwright
 
 from candidatura_agent.assets import record_job_resolution
 from candidatura_agent.db import Database
 from candidatura_agent.linkedin_apply import select_offsite_apply_url
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _is_external_https(url: str) -> bool:
+    parsed = urlsplit(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and bool(host) and host != "linkedin.com" and not host.endswith(".linkedin.com")
+
+
+def _click_apply_and_capture_external_url(page, context) -> str | None:
+    """Clica somente no botão externo do LinkedIn; nunca interage com o formulário."""
+    button = page.get_by_text("Candidatar-se", exact=True)
+    if button.count() != 1:
+        return None
+    existing = {item.url for item in context.pages}
+    target = page
+    try:
+        with context.expect_page(timeout=8_000) as opened:
+            button.click()
+        target = opened.value
+        target.wait_for_load_state("domcontentloaded", timeout=45_000)
+    except TimeoutError:
+        page.wait_for_timeout(2_500)
+        opened_pages = [item for item in context.pages if item.url not in existing]
+        if opened_pages:
+            target = opened_pages[-1]
+    try:
+        return target.url if _is_external_https(target.url) else None
+    finally:
+        if target is not page and not target.is_closed():
+            target.close()
 
 
 def main() -> int:
@@ -45,6 +76,8 @@ def main() -> int:
                     }))"""
                 )
                 url = select_offsite_apply_url(anchors)
+                if url is None:
+                    url = _click_apply_and_capture_external_url(page, context)
                 if url is None:
                     outcomes.append({"job_id": job["id"], "status": "no_offsite_apply_url"})
                     continue
