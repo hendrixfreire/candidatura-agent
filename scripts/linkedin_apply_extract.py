@@ -62,9 +62,11 @@ def main() -> int:
         with sync_playwright() as playwright:
             browser = playwright.chromium.connect_over_cdp("http://127.0.0.1:9226")
             context = browser.contexts[0]
-            page = context.pages[0] if context.pages else context.new_page()
-            if page.locator('input[type=password]').count():
+            has_session = any(cookie.get("name") == "li_at" for cookie in context.cookies("https://www.linkedin.com"))
+            if not has_session:
+                print(json.dumps({"status": "login_required"}))
                 return 0
+            page = context.new_page()
             outcomes = []
             for job in db.asset_queue(limit=10, stage="resolve"):
                 page.goto(job["source_url"], wait_until="domcontentloaded", timeout=90_000)
@@ -92,9 +94,9 @@ def main() -> int:
                 outcomes.append({"job_id": job["id"], "status": "resolved", "ats": ats})
             if outcomes:
                 print(json.dumps(outcomes, ensure_ascii=False))
-    except Exception:
-        # Browser/session inexistente não é falha do pipeline e não deve gerar ruído.
-        return 0
+    except Exception as exc:
+        print(json.dumps({"status": "extractor_failed", "error": type(exc).__name__}))
+        return 1
     return 0
 
 
