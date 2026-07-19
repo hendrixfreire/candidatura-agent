@@ -23,6 +23,30 @@ def test_ingest_is_idempotent(tmp_path: Path):
     assert db.list_jobs()[0]["source_score"] == 100
 
 
+def test_ingest_accepts_versioned_job_candidate_contract(tmp_path: Path):
+    source = tmp_path / "job-candidate.v1.json"
+    source.write_text(json.dumps({
+        "contract": "job-candidate", "schema_version": 1,
+        "produced_at": "2026-07-19T12:00:00Z",
+        "jobs": [{
+            "source": "linkedin", "source_job_id": "123",
+            "source_url": "https://www.linkedin.com/jobs/view/123",
+            "title": "Senior Data Engineer", "company": "Acme", "location": "Brazil",
+            "work_mode": "remote", "posted_at": "2026-07-19",
+            "description": "Python SQL", "source_score": 90,
+            "collected_at": "2026-07-19T11:59:00Z",
+        }],
+    }))
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+
+    assert ingest_linkedin_json(db, source) == 1
+    job = db.list_jobs()[0]
+    assert job["external_id"] == "123"
+    assert job["source_score"] == 90
+    assert job["description"] == "Python SQL"
+
+
 def test_daily_queue_has_no_default_cap_but_accepts_optional_batch_size(tmp_path: Path):
     db = Database(tmp_path / "state.db")
     db.initialize()
