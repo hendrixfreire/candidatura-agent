@@ -1,12 +1,41 @@
-.venv/
-__pycache__/
-.pytest_cache/
+# Local runtime and credentials — never version these.
+config.json
+.env
+.env.*
+!.env.example
+
+# Candidate data and application state.
 data/
-reports/*.md
-data/browser-profile/
-data/browser-profile-*/
-data/profile.json
-data/run_control.json
+!data/profile.example.json
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Generated candidate assets and browser evidence.
+docs/COMO-FUNCIONA.md
+scripts/status.sh
 reports/*.md
 reports/screenshots/
 reports/evidence/
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Browser sessions.
+data/browser-profile/
+data/browser-profile-*/
+cookies/
+sessions/
+
+# Python and editor artifacts.
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.DS_Store
+.vscode/
+.idea/

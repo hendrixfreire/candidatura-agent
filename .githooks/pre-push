@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+remote_url=${2:-}
+case "$remote_url" in
+  *github.com/hendrixfreire/linkedin-job-scraper.git*)
+    echo "Push bloqueado: este worktree contém runtime privado. Publique somente pela worktree sanitizada." >&2
+    exit 1
+    ;;
+esac
+repo_root=$(git rev-parse --show-toplevel)
+exec python3 "$repo_root/scripts/audit_public_tree.py"

@@ -52,7 +52,7 @@ def test_notification_is_marked_only_after_successful_discord_delivery(tmp_path:
 
     sent = send_pending_notifications(
         db,
-        "discord:1526233025346666617:1526233025346666617",
+        "discord:example-channel",
         sender=lambda target, message: calls.append((target, message)),
     )
     assert sent == 1
