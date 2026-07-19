@@ -22,3 +22,17 @@ def test_exact_approved_greenhouse_questions_map_to_profile_keys():
     assert classify_field("What is your expected base salary for this role? (in reais)").key == "expected_base_salary_answer"
     assert classify_field("I have nothing to declare.").key == "conflict_nothing_to_declare"
     assert classify_field("How did you hear about this opportunity?").key == "application_source"
+
+
+def test_approved_ifood_greenhouse_questions_map_to_explicit_profile_answers():
+    assert classify_field("Nome* Nome first_name").key == "first_name"
+    assert classify_field("Sobrenome* Sobrenome last_name").key == "last_name"
+    assert classify_field("Empresa Atual / Última Empresa*").key == "last_employer"
+    assert classify_field("Cargo Atual / Último Cargo*").key == "last_job_title"
+    assert classify_field("Quais são os seus pronomes?*").key == "pronouns"
+    assert classify_field("Você já trabalhou no iFood?*").key == "worked_at_ifood"
+    assert classify_field("Com qual gênero você se identifica?*").key == "gender_identity"
+    assert classify_field("Qual é sua cor ou raça?*").key == "race_ethnicity"
+    assert classify_field("Se você é uma pessoa com deficiência, nos informe qual é sua deficiência:*").key == "disability_details"
+    assert classify_field("Você é uma pessoa com deficiência?*").key == "person_with_disability"
+    assert classify_field("Você aceita o Aviso de Diversidade – D&I?*").key == "demographic_consent"
