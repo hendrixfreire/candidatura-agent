@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
+from urllib.parse import urljoin
 from typing import Any
 
 from .adapters import classify_field, detect_ats
@@ -96,6 +97,15 @@ def _field_label(locator: Any) -> str:
                   el.getAttribute('name'), el.id].filter(Boolean).join(' ').trim();
         }"""
     )
+
+
+def _matching_option_index(options: list[str], value: object) -> int | None:
+    """Retorna somente uma escolha React Select exatamente aprovada no perfil."""
+    expected = " ".join(str(value).casefold().split())
+    for index, option in enumerate(options):
+        if " ".join(option.casefold().split()) == expected:
+            return index
+    return None
 
 
 def fill_known_fields(page: Any, profile: dict[str, Any]) -> FillResult:
@@ -202,23 +212,19 @@ def fill_known_fields(page: Any, profile: dict[str, Any]) -> FillResult:
                     field.press_sequentially(str(value), delay=20)
                 else:
                     field.type(str(value), delay=20)
-                page.wait_for_timeout(500)
+                page.wait_for_timeout(2_500 if field.get_attribute("id") == "candidate-location" else 500)
                 # Try to select from the dropdown
                 try:
                     options = page.locator('[role="option"]:visible')
-                    if options.count() == 1:
-                        # Single match — click it
-                        options.first.click()
-                    elif options.count() > 1:
-                        # Multiple matches — click the first one
-                        options.first.click()
-                    else:
-                        # No visible options — try ArrowDown + Enter
-                        field.press("ArrowDown")
-                        field.press("Enter")
+                    option_texts = options.all_text_contents()
+                    match_index = _matching_option_index(option_texts, value)
+                    if match_index is None:
+                        blockers.append(f"{label}: opção aprovada não encontrada")
+                        continue
+                    options.nth(match_index).click()
                 except Exception:
-                    field.press("ArrowDown")
-                    field.press("Enter")
+                    blockers.append(f"{label}: não foi possível confirmar a opção")
+                    continue
                 page.wait_for_timeout(300)
             elif tag == "select":
                 # Native HTML select
@@ -285,6 +291,8 @@ def has_submission_confirmation(page: Any) -> bool:
         "thank you for applying", "application submitted", "application has been submitted",
         "application was submitted successfully", "thanks for applying", "obrigado por se candidatar",
         "obrigada por se candidatar", "candidatura enviada", "candidatura foi enviada",
+        # Ashby: "Your application was successfully sent to our team"
+        "successfully sent to our team", "application was successfully sent",
     )
     if any(term in text for term in text_terms):
         return True
@@ -292,15 +300,43 @@ def has_submission_confirmation(page: Any) -> bool:
     return any(term in path for term in ("/confirmation", "/thank-you", "application-submitted"))
 
 
+def _open_application_route(page: Any, ats: str) -> None:
+    """Sai da descrição pública e abre a rota real do formulário quando o ATS a separa."""
+    if ats == "ashby" and not page.url.rstrip("/").endswith("/application"):
+        link = page.locator('a[href*="/application"]').first
+    elif ats == "factorial" and "/job_posting/" in page.url:
+        link = page.locator('a[href*="/apply/"]').first
+    else:
+        return
+    href = link.get_attribute("href") if link.count() else None
+    if href:
+        page.goto(urljoin(page.url, href), wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_timeout(1000)
+
+
 def run_application(page: Any, url: str, profile: dict[str, Any], *, auto_submit: bool, allowed_ats: set[str], screenshot_dir: str | Path) -> ApplicationResult:
     page.goto(url, wait_until="domcontentloaded", timeout=45000)
     page.wait_for_timeout(1000)
-    challenge = has_human_challenge(page)
     ats = detect_ats(page.url)
+    _open_application_route(page, ats)
+    ats = detect_ats(page.url)
+    # Ashby monta o form async ("Fetching application form", zero inputs por ~1-2s).
+    # O wait_for_timeout(1000) padrão é curto demais — espera o campo de email aparecer.
+    if ats == "ashby":
+        try:
+            page.wait_for_selector("input[type=email]", timeout=30000)
+            page.wait_for_timeout(2000)
+        except Exception:
+            pass
+    challenge = has_human_challenge(page)
     if challenge:
         return ApplicationResult("blocked", ats, page.url, [challenge], [])
 
-    fill = fill_known_fields(page, profile)
+    if ats == "ashby":
+        from .ashby_adapter import fill_ashby_form
+        fill = fill_ashby_form(page, profile)
+    else:
+        fill = fill_known_fields(page, profile)
     blockers = list(fill.blockers)
     if ats not in allowed_ats:
         blockers.append(f"ATS não liberado: {ats}")
@@ -315,9 +351,19 @@ def run_application(page: Any, url: str, profile: dict[str, Any], *, auto_submit
     if not auto_submit:
         return ApplicationResult("dry_run", ats, page.url, [], fill.filled, str(pre_shot))
 
-    submit = page.get_by_role("button", name=re.compile(r"submit|send|enviar|candidatar|apply", re.I))
-    if submit.count() != 1:
-        return ApplicationResult("blocked", ats, page.url, ["botão de envio ambíguo"], fill.filled, str(pre_shot))
+    # Ashby tem vários button[type=submit] (Upload/Yes/No) — filtra por texto "Submit Application"
+    if ats == "ashby":
+        submit = page.get_by_role("button", name="Submit Application")
+        if submit.count() == 0:
+            submit = page.locator('button[type="submit"]').filter(has_text="Submit Application")
+        if submit.count() != 1:
+            return ApplicationResult("blocked", ats, page.url, ["botão de envio ambíguo"], fill.filled, str(pre_shot))
+    else:
+        submit = page.locator('button[type="submit"]:visible, input[type="submit"]:visible')
+        if submit.count() != 1:
+            submit = page.get_by_role("button", name=re.compile(r"submit|send|enviar|candidatar|apply", re.I))
+        if submit.count() != 1:
+            return ApplicationResult("blocked", ats, page.url, ["botão de envio ambíguo"], fill.filled, str(pre_shot))
     submit.click()
     page.wait_for_timeout(1500)
     post_shot = shot_dir / "last-application-post-submit.png"
