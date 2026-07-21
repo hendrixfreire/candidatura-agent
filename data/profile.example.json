@@ -1,0 +1,27 @@
+{
+  "full_name": "Jane Doe",
+  "email": "jane.doe@example.com",
+  "phone": "+55 11 99999-9999",
+  "location": "São Paulo, Brazil",
+  "country": "Brazil",
+  "phone_country_code": "BRA (+55)",
+  "english_proficiency": "Advanced",
+  "years_relevant_experience": "7-10",
+  "within_cet_range": "Yes",
+  "citizen_answer": "Yes",
+  "application_source": "LinkedIn",
+  "linkedin": "https://www.linkedin.com/in/jane-doe",
+  "resume_source": "/path/to/cv_base.md",
+  "resume_strategy": "tailor_per_job",
+  "start_availability": "Imediata",
+  "work_authorization_brazil": true,
+  "visa_sponsorship": {
+    "brazil": false,
+    "outside_brazil_without_local_authorization": true
+  },
+  "demographic_optional_answer": "leave_blank_when_optional",
+  "expected_monthly_gross_eur": "",
+  "current_base_salary_answer": "",
+  "expected_base_salary_answer": "",
+  "conflict_nothing_to_declare": true
+}
