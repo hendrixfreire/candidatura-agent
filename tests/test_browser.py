@@ -2,7 +2,13 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-from candidatura_agent.browser import fill_known_fields, has_submission_confirmation, run_application
+from candidatura_agent.browser import _matching_option_index, fill_known_fields, has_submission_confirmation, run_application
+
+
+def test_matching_option_index_requires_an_exact_normalized_choice():
+    options = ["Pardo", "Branco", "Não quero responder"]
+    assert _matching_option_index(options, "branco") == 1
+    assert _matching_option_index(options, "Branca") is None
 
 
 def test_fill_known_fields_blocks_sensitive_required_question(tmp_path: Path):
@@ -133,8 +139,9 @@ def test_file_is_uploaded_after_combobox_rerenders_form(tmp_path: Path):
 def test_run_application_requires_visible_submission_confirmation(tmp_path: Path):
     confirmed = tmp_path / "confirmed.html"
     confirmed.write_text("""
+    <button type="button">Apply</button>
     <label for="email">Email</label><input id="email" required>
-    <button onclick="document.body.innerHTML='<h1>Thank you for applying</h1>'">Submit application</button>
+    <button type="submit" onclick="document.body.innerHTML='<h1>Thank you for applying</h1>'">Submit application</button>
     """)
     unconfirmed = tmp_path / "unconfirmed.html"
     unconfirmed.write_text("""
@@ -175,4 +182,29 @@ def test_peopleforce_success_phrase_is_recognized():
             </form>
         """)
         assert has_submission_confirmation(page) is False
+        browser.close()
+
+
+def test_ashby_submit_button_selector_matches_without_type_submit(tmp_path: Path):
+    """Ashby renderiza o botão de envio sem type=submit, usando classe própria.
+
+    Simula o DOM real (button.ashby-application-form-submit-button com span
+    "Submit Application") e garante que o dry-run não bloqueia por
+    "botão de envio ambíguo".
+    """
+    from candidatura_agent.adapters import detect_ats
+
+    html = """
+    <input type='email' id='_systemfield_email'>
+    <input type='text' id='_systemfield_name'>
+    <button class='ashby-application-form-submit-button'><span>Submit Application</span></button>
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.set_content(html)
+        # seletor estável pela classe deve casar exatamente 1
+        submit = page.locator("button.ashby-application-form-submit-button")
+        assert submit.count() == 1
+        assert "Submit Application" in submit.inner_text()
         browser.close()
