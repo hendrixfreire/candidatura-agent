@@ -1,4 +1,13 @@
-"""Dashboard local com fila, auditoria e feedback."""
+"""Dashboard local com fila, auditoria, filtros e feedback.
+
+Fase 1 da GUI local (fatia vertical):
+- Home operacional (somente leitura).
+- Lista de vagas com filtros por status, ATS e busca textual.
+- Detalhe da vaga com bloqueios e motivos de aderência.
+- Trilha de auditoria (eventos) por vaga.
+- Endpoints originais /api/snapshot e /api/feedback preservados.
+- Nenhum endpoint de envio nesta fase.
+"""
 
 from __future__ import annotations
 
@@ -7,25 +16,23 @@ from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from .db import Database
+from .dashboard_page import HTML as PAGE_HTML
 
 
-HTML = r"""<!doctype html>
-<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Candidatura Agent</title>
-<style>
-:root{--bg:#0b0b0b;--panel:#151515;--line:#303030;--text:#f0f0f0;--muted:#888;--accent:#d82424;--ok:#43b06b;--warn:#d9a441}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,system-ui,sans-serif}header{position:sticky;top:0;background:#0b0b0bea;border-bottom:1px solid var(--line);padding:22px 4vw;z-index:3;backdrop-filter:blur(10px)}h1{margin:0;font-size:21px;letter-spacing:-.03em}.kicker,.meta{font:10px ui-monospace,monospace;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}main{padding:28px 4vw 80px;max-width:1450px;margin:auto}.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin-bottom:24px}.stat{background:var(--panel);padding:18px}.stat b{display:block;font:28px ui-monospace,monospace;margin-top:8px}.toolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:22px 0}.grid{display:grid;gap:12px}.card{background:var(--panel);border:1px solid var(--line);padding:18px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px}.title{font-size:17px;font-weight:650}.company{color:#bbb;margin:6px 0}.score{font:22px ui-monospace,monospace;color:var(--ok);text-align:right}.tag{display:inline-block;border:1px solid var(--line);padding:4px 7px;border-radius:3px;font:9px ui-monospace,monospace;text-transform:uppercase;margin-right:5px}.feedback{display:flex;gap:6px;margin-top:14px;flex-wrap:wrap}.feedback input{flex:1;min-width:180px;background:#0d0d0d;border:1px solid var(--line);color:var(--text);padding:8px}.feedback button,.refresh{background:transparent;color:var(--text);border:1px solid var(--line);padding:8px 10px;cursor:pointer}.feedback button:hover,.refresh:hover{border-color:var(--accent)}a{color:#ddd}.empty{border:1px dashed var(--line);padding:30px;color:var(--muted)}@media(max-width:700px){.card{grid-template-columns:1fr}.score{text-align:left}}
-</style></head><body>
-<header><div class="kicker">Hermes / candidatura agent</div><h1>Operação de candidaturas</h1></header>
-<main><section class="stats" id="stats"></section><div class="toolbar"><div class="meta" id="updated">carregando</div><button class="refresh" onclick="load()">Atualizar</button></div><section class="grid" id="jobs"></section></main>
-<script>
-const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-async function sendFeedback(id,rating){const reason=document.getElementById('reason-'+id).value;await fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({job_id:id,rating,reason})});await load()}
-async function load(){const d=await fetch('/api/snapshot').then(r=>r.json());document.getElementById('updated').textContent='atualizado '+new Date().toLocaleTimeString('pt-BR');const order=['submitted','qualified','blocked','rejected','dry_run'];const target=`<div class="stat"><span class="meta">meta mínima · sem teto</span><b>${d.daily_target.submitted}/${d.daily_target.minimum}</b></div>`;document.getElementById('stats').innerHTML=target+order.map(k=>`<div class="stat"><span class="meta">${esc(k)}</span><b>${d.stats[k]||0}</b></div>`).join('');document.getElementById('jobs').innerHTML=d.jobs.length?d.jobs.map(j=>`<article class="card"><div><div class="title">${esc(j.title)}</div><div class="company">${esc(j.company)} · ${esc(j.location)}</div><span class="tag">${esc(j.status)}</span>${j.ats?`<span class="tag">${esc(j.ats)}</span>`:''}<div class="feedback"><input id="reason-${j.id}" placeholder="motivo opcional"><button onclick="sendFeedback(${j.id},'good')">Boa</button><button onclick="sendFeedback(${j.id},'bad')">Ruim</button><button onclick="sendFeedback(${j.id},'irrelevant')">Irrelevante</button></div><div style="margin-top:12px"><a href="${esc(j.source_url)}" target="_blank" rel="noreferrer">Abrir vaga</a></div></div><div class="score">${j.fit_score}/100</div></article>`).join(''):'<div class="empty">Nenhuma vaga no banco.</div>'}
-load();setInterval(load,30000);
-</script></body></html>"""
+
+def _parse_json_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except json.JSONDecodeError:
+            return []
+    return []
 
 
 def dashboard_snapshot(db: Database, daily_target_min: int = 10) -> dict[str, Any]:
@@ -34,10 +41,7 @@ def dashboard_snapshot(db: Database, daily_target_min: int = 10) -> dict[str, An
     submitted = db.submitted_today()
     for job in jobs:
         for key in ("fit_reasons", "blockers"):
-            try:
-                job[key] = json.loads(job[key])
-            except (TypeError, json.JSONDecodeError):
-                job[key] = []
+            job[key] = _parse_json_list(job.get(key))
     return {
         "stats": dict(stats),
         "daily_target": {
@@ -50,6 +54,65 @@ def dashboard_snapshot(db: Database, daily_target_min: int = 10) -> dict[str, An
         "jobs": jobs,
         "feedback": db.list_feedback()[:100],
     }
+
+
+def jobs_payload(db: Database, filters: dict[str, str]) -> dict[str, Any]:
+    """Lista filtrada de vagas (somente leitura), com blockers/fit_reasons parseados."""
+    kwargs: dict[str, Any] = {}
+    if filters.get("status"):
+        kwargs["status"] = filters["status"]
+    if filters.get("ats"):
+        kwargs["ats"] = filters["ats"]
+    if filters.get("q"):
+        kwargs["query_text"] = filters["q"]
+    if filters.get("min_score"):
+        try:
+            kwargs["min_score"] = int(filters["min_score"])
+        except ValueError:
+            pass
+    jobs = db.list_jobs(**kwargs)
+    for job in jobs:
+        for key in ("fit_reasons", "blockers"):
+            job[key] = _parse_json_list(job.get(key))
+    try:
+        limit = min(200, max(1, int(filters.get("limit", "50"))))
+        offset = max(0, int(filters.get("offset", "0")))
+    except ValueError:
+        limit, offset = 50, 0
+    return {"jobs": jobs[offset : offset + limit], "count": len(jobs), "limit": limit, "offset": offset}
+
+
+def job_detail_payload(db: Database, job_id: int) -> dict[str, Any] | None:
+    job = db.get_job(job_id)
+    if not job:
+        return None
+    for key in ("fit_reasons", "blockers"):
+        job[key] = _parse_json_list(job.get(key))
+    return {"job": job}
+
+
+def job_events_payload(db: Database, job_id: int) -> dict[str, Any]:
+    return {"events": db.list_events(job_id)}
+
+
+def _job_id_from_path(path: str) -> int | None:
+    parts = [p for p in path.split("/") if p]
+    if len(parts) == 3 and parts[0] == "api" and parts[1] == "jobs":
+        try:
+            return int(parts[2])
+        except ValueError:
+            return None
+    return None
+
+
+def _is_job_events_path(path: str) -> int | None:
+    parts = [p for p in path.split("/") if p]
+    if len(parts) == 4 and parts[0] == "api" and parts[1] == "jobs" and parts[3] == "events":
+        try:
+            return int(parts[2])
+        except ValueError:
+            return None
+    return None
 
 
 def make_handler(db: Database, daily_target_min: int = 10):
@@ -65,21 +128,49 @@ def make_handler(db: Database, daily_target_min: int = 10):
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_json(self, status: int, payload: Any) -> None:
+            self._send(
+                status,
+                json.dumps(payload, ensure_ascii=False).encode(),
+                "application/json; charset=utf-8",
+            )
+
         def do_GET(self) -> None:
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
             if path in ("/", "/index.html"):
-                self._send(200, HTML.encode(), "text/html; charset=utf-8")
-            elif path == "/api/snapshot":
-                body = json.dumps(dashboard_snapshot(db, daily_target_min), ensure_ascii=False).encode()
-                self._send(200, body, "application/json; charset=utf-8")
-            elif path == "/api/health":
-                self._send(200, b'{"ok":true}', "application/json")
-            else:
-                self._send(404, b'{"error":"not found"}', "application/json")
+                self._send(200, PAGE_HTML.encode(), "text/html; charset=utf-8")
+                return
+            if path == "/api/snapshot":
+                self._send_json(200, dashboard_snapshot(db, daily_target_min))
+                return
+            if path == "/api/health":
+                self._send_json(200, {"ok": True})
+                return
+            if path == "/api/jobs":
+                filters = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+                self._send_json(200, jobs_payload(db, filters))
+                return
+            events_id = _is_job_events_path(path)
+            if events_id is not None:
+                if db.get_job(events_id) is None:
+                    self._send_json(404, {"error": "job not found"})
+                    return
+                self._send_json(200, job_events_payload(db, events_id))
+                return
+            detail_id = _job_id_from_path(path)
+            if detail_id is not None:
+                payload = job_detail_payload(db, detail_id)
+                if payload is None:
+                    self._send_json(404, {"error": "job not found"})
+                    return
+                self._send_json(200, payload)
+                return
+            self._send_json(404, {"error": "not found"})
 
         def do_POST(self) -> None:
             if urlparse(self.path).path != "/api/feedback":
-                self._send(404, b'{"error":"not found"}', "application/json")
+                self._send_json(404, {"error": "not found"})
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
@@ -88,9 +179,9 @@ def make_handler(db: Database, daily_target_min: int = 10):
                 if rating not in ("good", "bad", "irrelevant"):
                     raise ValueError("rating inválido")
                 db.add_feedback(int(payload["job_id"]), rating, str(payload.get("reason") or "")[:500])
-                self._send(200, b'{"ok":true}', "application/json")
+                self._send_json(200, {"ok": True})
             except (ValueError, KeyError, json.JSONDecodeError) as exc:
-                self._send(400, json.dumps({"error": str(exc)}).encode(), "application/json")
+                self._send_json(400, {"error": str(exc)})
 
         def log_message(self, format: str, *args: Any) -> None:
             pass

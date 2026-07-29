@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .browser import run_application
 from .db import Database
 from .ingest import ingest_linkedin_json
+from .linkedin import discover_linkedin_jobs, job_key
 from .policy import assess_job
 from .run_lock import exclusive_run_lock
 
@@ -39,7 +40,7 @@ def _allowed_ats_for_run(config: dict[str, Any], *, auto_submit: bool) -> set[st
     return set(values)
 
 
-def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+def _write_json_atomic(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -55,12 +56,36 @@ def _profile_for_job(profile: dict[str, Any], job: dict[str, Any]) -> dict[str, 
     return job_profile
 
 
-def run_pipeline(config: dict[str, Any], root: Path) -> dict[str, Any]:
+def run_pipeline(
+    config: dict[str, Any], root: Path, *,
+    discover_jobs: Callable[..., list[dict]] = discover_linkedin_jobs,
+) -> dict[str, Any]:
     started = datetime.now()
     db = Database(_resolve(root, config["database"]))
     db.initialize()
     profile = json.loads(_resolve(root, config["profile"]).read_text())
-    ingested = ingest_linkedin_json(db, _resolve(root, config["source_json"]))
+    source_path = _resolve(root, config["source_json"])
+    discovered = None
+    discovery_config = config.get("linkedin", {})
+    if discovery_config.get("enabled"):
+        known_jobs = db.list_jobs()
+        known_external_ids = {
+            str(job["external_id"])
+            for job in known_jobs
+            if job.get("external_id") is not None
+        }
+        known_job_keys = {
+            job_key(str(job.get("title") or ""), str(job.get("company") or ""))
+            for job in known_jobs
+        }
+        jobs = discover_jobs(
+            discovery_config,
+            known_external_ids=known_external_ids,
+            known_job_keys=known_job_keys,
+        )
+        _write_json_atomic(source_path, jobs)
+        discovered = len(jobs)
+    ingested = ingest_linkedin_json(db, source_path)
 
     weights = db.learned_weights()
     qualified = 0
@@ -136,6 +161,7 @@ def run_pipeline(config: dict[str, Any], root: Path) -> dict[str, Any]:
         "status": "ok",
         "started_at": started.isoformat(timespec="seconds"),
         "finished_at": datetime.now().isoformat(timespec="seconds"),
+        "discovered": discovered,
         "ingested": ingested,
         "qualified": qualified,
         "rejected": rejected,

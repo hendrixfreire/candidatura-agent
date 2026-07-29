@@ -17,9 +17,9 @@ QUEUE_FIELDS = (
 )
 
 
-def queue_payload(db: Database, limit: int = 1) -> list[dict]:
+def queue_payload(db: Database, limit: int = 1, stage: str | None = None) -> list[dict]:
     payload = []
-    for job in db.asset_queue(limit=limit):
+    for job in db.asset_queue(limit=limit, stage=stage):
         item = {key: job.get(key) for key in QUEUE_FIELDS}
         reasons = item.get("fit_reasons")
         if isinstance(reasons, str):
@@ -74,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     queue = sub.add_parser("queue")
+    queue.add_argument("--stage", choices=("resolve", "resume"))
     queue.add_argument("--limit", type=int, default=1)
 
     enrich = sub.add_parser("enrich")
@@ -105,7 +106,7 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     db = _database(_root())
     if args.command == "queue":
-        result = queue_payload(db, limit=args.limit)
+        result = queue_payload(db, limit=args.limit, stage=args.stage)
     elif args.command == "enrich":
         result = enrich_descriptions(db, limit=args.limit)
     elif args.command == "resolve":

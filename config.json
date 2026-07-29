@@ -1,5 +1,38 @@
 {
-  "source_json": "/Users/hendrixfreire/Projetos/vagas_linkedin_new.json",
+  "source_json": "data/linkedin_jobs_new.json",
+  "linkedin": {
+    "enabled": true,
+    "keywords": [
+      "data engineer",
+      "analytics engineer",
+      "data analyst",
+      "data analytics manager",
+      "BI manager",
+      "business intelligence manager",
+      "head de dados",
+      "AI engineer",
+      "data scientist",
+      "cientista de dados",
+      "engenheiro de dados",
+      "data architect",
+      "analista de dados",
+      "data platform engineer",
+      "gerente de dados",
+      "gerente de BI",
+      "gerente de business intelligence",
+      "coordenador de dados",
+      "data lead"
+    ],
+    "company_blocklist": [
+      "jobgether",
+      "bairesdev",
+      "tata consultancy",
+      "fullstack",
+      "indi staffing"
+    ],
+    "max_pages": 2,
+    "max_jobs": 8
+  },
   "database": "data/candidaturas.db",
   "profile": "data/profile.json",
   "run_control": "data/run_control.json",

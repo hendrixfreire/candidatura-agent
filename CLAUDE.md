@@ -14,8 +14,9 @@ Pipeline local e auditável para candidaturas de emprego autônomas.
 - `src/candidatura_agent/db.py`: schema e persistência
 - `src/candidatura_agent/policy.py`: score, bloqueios e autoenvio
 - `src/candidatura_agent/ingest.py`: importação do scraper
+- `src/candidatura_agent/linkedin.py`: descoberta integrada no LinkedIn Guest Jobs
 - `src/candidatura_agent/browser.py`: Playwright e adaptadores
-- `src/candidatura_agent/dashboard.py`: painel e feedback
+- `src/candidatura_agent/dashboard.py`: painel HTTP, API de vagas, filtros e auditoria
 - `src/candidatura_agent/report.py`: relatório diário
 
 ## Convenções
@@ -32,7 +33,7 @@ Pipeline local e auditável para candidaturas de emprego autônomas.
 ```
 
 ## Estado atual
-Implementação inicial em `dry_run`; autoenvio bloqueado até calibração.
+Implementação inicial em `dry_run`; autoenvio bloqueado até calibração. GUI local em fatia vertical (fase 1): home, lista/filtros de vagas, detalhe somente leitura com bloqueios e trilha de auditoria — sem botões de envio.
 
 ## Referências
 - `README.md`

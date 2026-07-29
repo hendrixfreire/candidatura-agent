@@ -8,8 +8,8 @@ Agente local para buscar, priorizar, preencher e acompanhar candidaturas de empr
 
 ## Fluxo
 
-1. O scraper existente atualiza `~/Projetos/vagas_linkedin_new.json`.
-2. `hourly.py` ingere vagas, calcula aderência e seleciona a fila do dia.
+1. `linkedin.py` consulta o LinkedIn Guest Jobs, deduplica contra o SQLite e grava a coleta local.
+2. `hourly.py` ingere a coleta, calcula aderência e seleciona a fila do dia.
 3. O navegador resolve o destino externo e usa um adaptador de ATS.
 4. Campos conhecidos são preenchidos; campos bloqueantes pausam apenas aquela vaga.
 5. O resultado e todas as decisões ficam no SQLite.
@@ -30,6 +30,7 @@ O sistema não digita senhas, não resolve CAPTCHA/2FA e não inventa respostas 
 
 ```bash
 ./scripts/setup.sh
+./scripts/run_linkedin.sh
 ./scripts/run_hourly.sh
 ./scripts/run_report.sh
 ./scripts/run_dashboard.sh
@@ -37,6 +38,17 @@ O sistema não digita senhas, não resolve CAPTCHA/2FA e não inventa respostas 
 ```
 
 Dashboard: `http://127.0.0.1:8765`
+
+## GUI local (fase 1)
+
+Servidor HTTP stdlib (sem framework web) instalável via `candidatura-dashboard`.
+
+- `GET /` — home operacional, somente leitura.
+- `GET /api/jobs` — lista com filtros `status`, `ats`, `q` (busca em título/empresa), `min_score`.
+- `GET /api/jobs/<id>` — detalhe da vaga com blockers e fit_reasons parseados.
+- `GET /api/jobs/<id>/events` — trilha de auditoria.
+- `GET /api/snapshot` e `POST /api/feedback` — preservados.
+- Nenhum endpoint de envio nesta fase.
 
 ## Comece por aqui
 
@@ -47,7 +59,7 @@ Dashboard: `http://127.0.0.1:8765`
 ## Estrutura
 
 ```text
-src/candidatura_agent/  núcleo, banco, política, browser e dashboard
+src/candidatura_agent/  descoberta LinkedIn, banco, política, browser e dashboard
 data/                   SQLite, perfil local e controle de execução
 reports/                relatórios diários
 scripts/                wrappers para cron

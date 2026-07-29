@@ -143,15 +143,45 @@ class Database:
             row = conn.execute("SELECT id FROM jobs WHERE source_url=?", (source_url,)).fetchone()
             return int(row["id"])
 
-    def list_jobs(self, status: str | None = None) -> list[dict[str, Any]]:
-        query = "SELECT * FROM jobs"
-        args: tuple[Any, ...] = ()
+    def list_jobs(
+        self, status: str | None = None,
+        ats: str | None = None, query_text: str | None = None,
+        min_score: int | None = None, limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Lista vagas com filtros opcionais (somente leitura).
+
+        Filtros são combinados por AND. `query_text` busca em título e empresa
+        (case-insensitive). Ordenação por fit_score decrescente, depois created_at.
+        """
+        clauses: list[str] = []
+        args: list[Any] = []
         if status:
-            query += " WHERE status=?"
-            args = (status,)
-        query += " ORDER BY fit_score DESC, created_at ASC"
+            clauses.append("status=?")
+            args.append(status)
+        if ats:
+            clauses.append("ats=?")
+            args.append(ats)
+        if query_text:
+            clauses.append("(LOWER(title) LIKE ? OR LOWER(company) LIKE ?)")
+            like = f"%{query_text.lower()}%"
+            args.extend([like, like])
+        if min_score is not None:
+            clauses.append("fit_score>=?")
+            args.append(int(min_score))
+        sql = "SELECT * FROM jobs"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY fit_score DESC, created_at ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(int(limit))
         with self.connect() as conn:
-            return [dict(row) for row in conn.execute(query, args)]
+            return [dict(row) for row in conn.execute(sql, tuple(args))]
+
+    def get_job(self, job_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (int(job_id),)).fetchone()
+            return dict(row) if row else None
 
     def daily_queue(self, limit: int | None = None, require_resume: bool = False) -> list[dict[str, Any]]:
         query = """SELECT j.* FROM jobs j LEFT JOIN applications a ON a.job_id=j.id
@@ -175,8 +205,15 @@ class Database:
             )
             return [dict(row) for row in rows]
 
-    def asset_queue(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Lista vagas qualificadas que ainda precisam de URL ou CV."""
+    def asset_queue(self, limit: int = 10, stage: str | None = None) -> list[dict[str, Any]]:
+        """Lista vagas qualificadas que ainda precisam de URL ou CV, por etapa se solicitada."""
+        if stage not in {None, "resolve", "resume"}:
+            raise ValueError("etapa de ativo inválida")
+        stage_filter = ""
+        if stage == "resolve":
+            stage_filter = " AND j.apply_url IS NULL"
+        elif stage == "resume":
+            stage_filter = " AND j.apply_url IS NOT NULL AND j.resume_path IS NULL"
         with self.connect() as conn:
             rows = conn.execute(
                 """SELECT j.*,
@@ -184,8 +221,9 @@ class Database:
                 FROM jobs j LEFT JOIN applications a ON a.job_id=j.id
                 WHERE j.status='qualified' AND a.id IS NULL
                   AND (j.apply_url IS NULL OR j.resume_path IS NULL)
-                  AND (j.resolution_retry_at IS NULL OR j.resolution_retry_at <= datetime('now','localtime'))
-                ORDER BY j.fit_score DESC,
+                  AND (j.resolution_retry_at IS NULL OR j.resolution_retry_at <= datetime('now','localtime'))"""
+                + stage_filter
+                + """ ORDER BY j.fit_score DESC,
                   CASE WHEN j.apply_url IS NULL THEN 0 ELSE 1 END,
                   j.created_at ASC LIMIT ?""",
                 (limit,),

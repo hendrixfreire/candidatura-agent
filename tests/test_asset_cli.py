@@ -34,6 +34,27 @@ def test_queue_payload_returns_only_operational_job_fields(tmp_path: Path):
     }]
 
 
+def test_queue_payload_can_select_resume_stage_without_unresolved_jobs_hiding_it(tmp_path: Path):
+    db = Database(tmp_path / "state.db")
+    db.initialize()
+    db.upsert_job({
+        "external_id": "unresolved", "title": "Unresolved", "company": "Acme",
+        "location": "Brazil", "source_url": "https://www.linkedin.com/jobs/view/1",
+        "status": "qualified", "fit_score": 100,
+    })
+    db.upsert_job({
+        "external_id": "ready", "title": "Ready for CV", "company": "Beta",
+        "location": "Brazil", "source_url": "https://www.linkedin.com/jobs/view/2",
+        "apply_url": "https://jobs.lever.co/beta/ready", "ats": "lever",
+        "status": "qualified", "fit_score": 80,
+    })
+
+    payload = queue_payload(db, stage="resume", limit=1)
+
+    assert [job["title"] for job in payload] == ["Ready for CV"]
+    assert payload[0]["asset_stage"] == "resume"
+
+
 def test_enrich_descriptions_only_fetches_missing_descriptions(tmp_path: Path):
     db = Database(tmp_path / "state.db")
     db.initialize()
