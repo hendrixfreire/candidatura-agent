@@ -143,15 +143,45 @@ class Database:
             row = conn.execute("SELECT id FROM jobs WHERE source_url=?", (source_url,)).fetchone()
             return int(row["id"])
 
-    def list_jobs(self, status: str | None = None) -> list[dict[str, Any]]:
-        query = "SELECT * FROM jobs"
-        args: tuple[Any, ...] = ()
+    def list_jobs(
+        self, status: str | None = None,
+        ats: str | None = None, query_text: str | None = None,
+        min_score: int | None = None, limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Lista vagas com filtros opcionais (somente leitura).
+
+        Filtros são combinados por AND. `query_text` busca em título e empresa
+        (case-insensitive). Ordenação por fit_score decrescente, depois created_at.
+        """
+        clauses: list[str] = []
+        args: list[Any] = []
         if status:
-            query += " WHERE status=?"
-            args = (status,)
-        query += " ORDER BY fit_score DESC, created_at ASC"
+            clauses.append("status=?")
+            args.append(status)
+        if ats:
+            clauses.append("ats=?")
+            args.append(ats)
+        if query_text:
+            clauses.append("(LOWER(title) LIKE ? OR LOWER(company) LIKE ?)")
+            like = f"%{query_text.lower()}%"
+            args.extend([like, like])
+        if min_score is not None:
+            clauses.append("fit_score>=?")
+            args.append(int(min_score))
+        sql = "SELECT * FROM jobs"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY fit_score DESC, created_at ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(int(limit))
         with self.connect() as conn:
-            return [dict(row) for row in conn.execute(query, args)]
+            return [dict(row) for row in conn.execute(sql, tuple(args))]
+
+    def get_job(self, job_id: int) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE id=?", (int(job_id),)).fetchone()
+            return dict(row) if row else None
 
     def daily_queue(self, limit: int | None = None, require_resume: bool = False) -> list[dict[str, Any]]:
         query = """SELECT j.* FROM jobs j LEFT JOIN applications a ON a.job_id=j.id
@@ -175,8 +205,15 @@ class Database:
             )
             return [dict(row) for row in rows]
 
-    def asset_queue(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Lista vagas qualificadas que ainda precisam de URL ou CV."""
+    def asset_queue(self, limit: int = 10, stage: str | None = None) -> list[dict[str, Any]]:
+        """Lista vagas qualificadas que ainda precisam de URL ou CV, por etapa se solicitada."""
+        if stage not in {None, "resolve", "resume"}:
+            raise ValueError("etapa de ativo inválida")
+        stage_filter = ""
+        if stage == "resolve":
+            stage_filter = " AND j.apply_url IS NULL"
+        elif stage == "resume":
+            stage_filter = " AND j.apply_url IS NOT NULL AND j.resume_path IS NULL"
         with self.connect() as conn:
             rows = conn.execute(
                 """SELECT j.*,
@@ -184,8 +221,9 @@ class Database:
                 FROM jobs j LEFT JOIN applications a ON a.job_id=j.id
                 WHERE j.status='qualified' AND a.id IS NULL
                   AND (j.apply_url IS NULL OR j.resume_path IS NULL)
-                  AND (j.resolution_retry_at IS NULL OR j.resolution_retry_at <= datetime('now','localtime'))
-                ORDER BY j.fit_score DESC,
+                  AND (j.resolution_retry_at IS NULL OR j.resolution_retry_at <= datetime('now','localtime'))"""
+                + stage_filter
+                + """ ORDER BY j.fit_score DESC,
                   CASE WHEN j.apply_url IS NULL THEN 0 ELSE 1 END,
                   j.created_at ASC LIMIT ?""",
                 (limit,),
@@ -268,6 +306,74 @@ class Database:
                     "company": company,
                 }, ensure_ascii=False)),
             )
+
+    HUMAN_BLOCKERS = ("captcha", "2fa", "login", "verificação humana")
+
+    def list_events(self, job_id: int) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM events WHERE job_id=? ORDER BY id", (job_id,)
+            )
+            return [dict(row) for row in rows]
+
+    def reopen_blocked_jobs(
+        self, include_human: bool = False, *,
+        statuses: tuple[str, ...] = ("blocked",), job_id: int | None = None,
+    ) -> int:
+        """Devolve à fila vagas bloqueadas por causas que já foram corrigidas.
+
+        `run_pipeline` ignora vagas com status 'blocked' e `daily_queue` exige que
+        não exista application — sem esta reabertura, uma vaga bloqueada por campo
+        não mapeado permanece bloqueada para sempre, mesmo depois de a resposta
+        entrar no perfil. Bloqueios que exigem uma pessoa (captcha, 2FA, login)
+        só saem com `include_human`.
+        """
+        reopened = 0
+        placeholders = ",".join("?" for _ in statuses)
+        query = (
+            "SELECT a.id AS application_id, a.job_id, a.blockers "
+            "FROM applications a JOIN jobs j ON j.id=a.job_id "
+            f"WHERE a.status IN ({placeholders})"
+        )
+        args: tuple[Any, ...] = tuple(statuses)
+        if job_id is not None:
+            query += " AND a.job_id=?"
+            args += (int(job_id),)
+        with self.connect() as conn:
+            rows = conn.execute(query, args).fetchall()
+            for row in rows:
+                try:
+                    blockers = json.loads(row["blockers"])
+                except (TypeError, json.JSONDecodeError):
+                    blockers = []
+                text = " ".join(str(item).lower() for item in blockers)
+                if not include_human and any(term in text for term in self.HUMAN_BLOCKERS):
+                    continue
+                conn.execute("DELETE FROM notifications WHERE application_id=?", (row["application_id"],))
+                conn.execute("DELETE FROM applications WHERE id=?", (row["application_id"],))
+                conn.execute(
+                    """UPDATE jobs SET status='qualified',blockers='[]',
+                    updated_at=datetime('now','localtime') WHERE id=?""",
+                    (row["job_id"],),
+                )
+                conn.execute(
+                    "INSERT INTO events(job_id,kind,payload) VALUES (?,?,?)",
+                    (row["job_id"], "application_reopened", json.dumps({
+                        "previous_blockers": blockers,
+                    }, ensure_ascii=False)),
+                )
+                reopened += 1
+        return reopened
+
+    def clear_resolution_backoff(self) -> int:
+        """Permite nova tentativa de resolver URLs adiadas por erro já corrigido."""
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """UPDATE jobs SET resolution_retry_at=NULL,
+                updated_at=datetime('now','localtime')
+                WHERE apply_url IS NULL AND resolution_retry_at IS NOT NULL"""
+            )
+            return int(cursor.rowcount)
 
     def submitted_today(self) -> int:
         with self.connect() as conn:

@@ -17,9 +17,9 @@ QUEUE_FIELDS = (
 )
 
 
-def queue_payload(db: Database, limit: int = 1) -> list[dict]:
+def queue_payload(db: Database, limit: int = 1, stage: str | None = None) -> list[dict]:
     payload = []
-    for job in db.asset_queue(limit=limit):
+    for job in db.asset_queue(limit=limit, stage=stage):
         item = {key: job.get(key) for key in QUEUE_FIELDS}
         reasons = item.get("fit_reasons")
         if isinstance(reasons, str):
@@ -74,6 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     queue = sub.add_parser("queue")
+    queue.add_argument("--stage", choices=("resolve", "resume"))
     queue.add_argument("--limit", type=int, default=1)
 
     enrich = sub.add_parser("enrich")
@@ -93,6 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
     resume = sub.add_parser("resume")
     resume.add_argument("--job-id", type=int, required=True)
     resume.add_argument("--path", required=True)
+
+    reopen = sub.add_parser("reopen")
+    reopen.add_argument("--include-human", action="store_true")
+    reopen.add_argument("--status", action="append", default=None)
+    reopen.add_argument("--job-id", type=int)
     return parser
 
 
@@ -100,7 +106,7 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     db = _database(_root())
     if args.command == "queue":
-        result = queue_payload(db, limit=args.limit)
+        result = queue_payload(db, limit=args.limit, stage=args.stage)
     elif args.command == "enrich":
         result = enrich_descriptions(db, limit=args.limit)
     elif args.command == "resolve":
@@ -109,6 +115,15 @@ def main(argv: list[str] | None = None) -> None:
             resolution_source=args.source,
         )
         result = {"job_id": args.job_id, "ats": ats, "apply_url": args.url}
+    elif args.command == "reopen":
+        result = {
+            "reopened": db.reopen_blocked_jobs(
+                include_human=args.include_human,
+                statuses=tuple(args.status or ("blocked",)),
+                job_id=args.job_id,
+            ),
+            "resolution_backoff_cleared": db.clear_resolution_backoff(),
+        }
     elif args.command == "fail-resolution":
         result = record_resolution_failure(
             db, args.job_id, args.error, retry_hours=args.retry_hours,

@@ -26,15 +26,15 @@ O sistema busca vagas no LinkedIn, grava tudo localmente, calcula aderência, pr
 | `data/` | Dados locais e privados; não entram no Git |
 | `reports/` | Relatórios e capturas; não entram no Git |
 
-### 2. Entrada de vagas e scraper
+### 2. Descoberta de vagas integrada
 
 ```text
-/Users/hendrixfreire/.hermes/scripts/linkedin_jobs.py
-/Users/hendrixfreire/Projetos/vagas_linkedin_new.json
+/Users/hendrixfreire/Projetos/candidatura-agent/src/candidatura_agent/linkedin.py
+/Users/hendrixfreire/Projetos/candidatura-agent/data/linkedin_jobs_new.json
 ```
 
-- `linkedin_jobs.py`: consulta vagas no LinkedIn e deduplica resultados.
-- `vagas_linkedin_new.json`: arquivo intermediário consumido pelo Candidatura Agent.
+- `linkedin.py`: consulta vagas no LinkedIn, filtra e deduplica contra o SQLite.
+- `linkedin_jobs_new.json`: artefato local de compatibilidade para ingestão e relatório.
 
 Wrapper do cron horário:
 
@@ -42,7 +42,7 @@ Wrapper do cron horário:
 /Users/hendrixfreire/.hermes/scripts/candidatura-hourly.sh
 ```
 
-Ele executa o scraper e, em seguida, chama `scripts/run_hourly.sh` dentro do projeto.
+Ele chama apenas `scripts/run_hourly.sh`; descoberta e candidatura agora vivem no mesmo projeto.
 
 ### 3. Dados privados e estado
 
@@ -55,7 +55,7 @@ Ele executa o scraper e, em seguida, chama `scripts/run_hourly.sh` dentro do pro
 | `candidaturas.db` | SQLite: vagas, avaliações, candidaturas, eventos, feedback e respostas |
 | `profile.json` | Perfil factual e respostas aprovadas para formulários |
 | `run_control.json` | Resultado resumido da última execução horária |
-| `browser-profile/` | Sessão persistente do Chromium/Playwright |
+| `browser-profile-brave/`, `browser-profile-chrome/`, `browser-profile-chromium/` | Sessões persistentes separadas por navegador; apenas perfis efetivamente usados são criados |
 
 Esses itens estão no `.gitignore`. Código vai para Git; dados pessoais, sessões e histórico operacional ficam apenas na máquina.
 
@@ -123,9 +123,9 @@ O `launchd` inicia o dashboard no login e o mantém vivo.
 ```text
 Hermes Cron
    ↓
-linkedin_jobs.py
+linkedin.py
    ↓
-~/Projetos/vagas_linkedin_new.json
+data/linkedin_jobs_new.json
    ↓
 hourly.py → ingest.py → policy.py
    ↓
@@ -148,6 +148,7 @@ data/candidaturas.db
 | Módulo | Responsabilidade |
 |---|---|
 | `ingest.py` | Lê o JSON do scraper e evita duplicatas |
+| `linkedin.py` | Busca, filtra, deduplica e enriquece vagas do LinkedIn |
 | `policy.py` | Calcula aderência e aplica filtros duros |
 | `db.py` | Mantém o SQLite e a trilha de auditoria |
 | `adapters.py` | Reconhece ATS e classifica campos do formulário |
@@ -168,7 +169,7 @@ data/candidaturas.db
 | Dashboard via `launchd` | contínuo | localhost:8765 | Rodando |
 
 
-Há duas rotinas que consultam o scraper: a antiga envia vagas ao Telegram e a nova alimenta o banco do agente. Elas estão separadas deliberadamente durante a calibração.
+A coleta é uma só e pertence ao Candidatura Agent. O cron de relatório e o ciclo horário usam o mesmo módulo e o mesmo SQLite.
 
 ## O que já é automático
 
@@ -191,11 +192,11 @@ Há duas rotinas que consultam o scraper: a antiga envia vagas ao Telegram e a n
 
 ## O que ainda NÃO é automático
 
-- resolver URLs que não aparecem em página oficial ou ATS indexado;
+- resolver automaticamente URLs que não aparecem em página oficial ou ATS indexado; esses casos entram na fila do resolvedor assistido;
 - responder perguntas legais, sensíveis ou factuais ainda não aprovadas;
 - superar login expirado, CAPTCHA ou 2FA sem participação humana;
 - enviar candidatura: `auto_submit` permanece desligado;
-- liberar ATS além do Greenhouse para envio real; os demais estão disponíveis apenas para `dry_run`.
+- ampliar envio real além de Greenhouse, Ashby e Factorial; os demais ATS aceitos continuam restritos a `dry_run`.
 
 Configuração de segurança atual:
 
@@ -204,13 +205,13 @@ Configuração de segurança atual:
   "daily_target_min": 10,
   "browser_enabled": true,
   "auto_submit": false,
-  "allowed_ats": ["greenhouse"],
-  "dry_run_allowed_ats": ["greenhouse", "lever", "ashby", "gupy", "peopleforce", "factorial"],
+  "allowed_ats": ["greenhouse", "ashby", "factorial"],
+  "dry_run_allowed_ats": ["greenhouse", "lever", "ashby", "gupy", "peopleforce", "factorial", "workday", "smartrecruiters", "solides", "recruitee", "workable", "teamtailor", "bamboohr", "inhire", "quickin", "abler", "kenoby", "pandape", "compleo"],
   "notification_target": "discord:1526233025346666617:1526233025346666617"
 }
 ```
 
-Dez é uma meta mínima, não um máximo. Quando o navegador for liberado, cada ciclo processará todas as vagas prontas e qualificadas encontradas; isso pode produzir mais de uma candidatura por hora e mais de dez no dia.
+Dez é uma meta mínima, não um máximo. Com o navegador habilitado, cada ciclo pode processar todas as vagas prontas e qualificadas encontradas; isso pode produzir mais de uma candidatura por hora e mais de dez no dia. O envio real continua bloqueado por `auto_submit=false`.
 
 A notificação usa a outbox `notifications` no SQLite. Um envio confirmado cria uma única entrada. `hermes send` entrega a mensagem no Discord e somente depois marca a entrada como entregue; falhas permanecem pendentes para retry na próxima execução.
 
@@ -233,7 +234,7 @@ Link da vaga: <URL externa>
 Origem: <URL do LinkedIn, quando diferente>
 ```
 
-Portanto, o cron horário já prepara ativos e executa simulações seguras; candidaturas reais continuam bloqueadas porque `auto_submit=false` e somente Greenhouse está na allowlist de envio.
+Portanto, o cron horário já prepara ativos e executa simulações seguras; candidaturas reais continuam bloqueadas porque `auto_submit=false`, mesmo com Greenhouse, Ashby e Factorial na allowlist de envio.
 
 ## Estado verificado em 14/07/2026
 

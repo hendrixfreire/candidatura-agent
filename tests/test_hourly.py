@@ -63,3 +63,39 @@ def test_hourly_pipeline_ingests_scores_and_writes_control(tmp_path: Path):
     assert result["target_met"] is False
     assert "daily_limit" not in result
     assert json.loads((tmp_path / "control.json").read_text())["status"] == "ok"
+
+
+def test_hourly_pipeline_discovers_jobs_before_ingesting_them(tmp_path: Path):
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text(json.dumps({
+        "target_titles": ["data engineer"],
+        "preferred_skills": ["python", "sql"],
+        "blocked_title_terms": ["junior"],
+        "allowed_locations": ["brazil"],
+        "min_fit_score": 70,
+    }))
+    source = tmp_path / "jobs.json"
+    config = {
+        "source_json": str(source),
+        "database": str(tmp_path / "state.db"),
+        "profile": str(profile_path),
+        "run_control": str(tmp_path / "control.json"),
+        "browser_enabled": False,
+        "linkedin": {"enabled": True, "keywords": ["data engineer"]},
+    }
+    calls = []
+
+    def discover(discovery_config, *, known_external_ids, known_job_keys):
+        calls.append((discovery_config, known_external_ids, known_job_keys))
+        return [{
+            "id": "new-1", "title": "Senior Data Engineer", "company": "Acme",
+            "location": "Brazil", "url": "https://www.linkedin.com/jobs/view/new-1",
+            "description": "Python SQL", "heuristic_score": 5,
+        }]
+
+    result = run_pipeline(config, tmp_path, discover_jobs=discover)
+
+    assert result["discovered"] == 1
+    assert result["ingested"] == 1
+    assert calls == [({"enabled": True, "keywords": ["data engineer"]}, set(), set())]
+    assert json.loads(source.read_text())[0]["id"] == "new-1"

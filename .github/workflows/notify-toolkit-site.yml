@@ -1,0 +1,114 @@
+name: Notify toolkit site
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '*.py'
+      - 'application-agent/**'
+      - 'config.example.json'
+      - 'docs/**'
+      - 'pyproject.toml'
+      - 'README.md'
+      - 'requirements*.txt'
+      - 'scripts/**'
+      - 'skills/**'
+      - 'src/**'
+      - '.github/workflows/notify-toolkit-site.yml'
+  pull_request_target:
+    branches:
+      - main
+    types:
+      - opened
+      - reopened
+      - synchronize
+    paths:
+      - '*.py'
+      - 'application-agent/**'
+      - 'config.example.json'
+      - 'docs/**'
+      - 'pyproject.toml'
+      - 'README.md'
+      - 'requirements*.txt'
+      - 'scripts/**'
+      - 'skills/**'
+      - 'src/**'
+      - '.github/workflows/notify-toolkit-site.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notify-toolkit-site-${{ github.event.pull_request.number || 'production' }}
+  cancel-in-progress: true
+
+jobs:
+  dispatch:
+    name: Request site deployment
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+      SOURCE_REPOSITORY: ${{ github.repository }}
+      SOURCE_EVENT: ${{ github.event_name }}
+      SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      SOURCE_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+      SOURCE_PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+      SOURCE_PR_URL: ${{ github.event.pull_request.html_url || '' }}
+      TARGET_REPOSITORY: hendrixfreire/linkedin-job-toolkit-site
+    steps:
+      # This privileged workflow must never check out, download, or execute the
+      # pull request head. Only GitHub-generated metadata is dispatched.
+      - name: Validate dispatch configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${GH_TOKEN:-}" ]]; then
+            echo "::error::Repository secret SITE_DISPATCH_TOKEN is not configured."
+            exit 1
+          fi
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40,64}$ ]]; then
+            echo "::error::Unexpected source commit identifier."
+            exit 1
+          fi
+          if [[ -n "$SOURCE_PR_NUMBER" && ! "$SOURCE_PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unexpected pull request number."
+            exit 1
+          fi
+
+      - name: Dispatch trusted metadata to the site repository
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          event_type="source_push"
+          pr_number="null"
+          if [[ "$SOURCE_EVENT" == "pull_request_target" ]]; then
+            event_type="source_pull_request"
+            pr_number="$SOURCE_PR_NUMBER"
+          fi
+
+          jq -n \
+            --arg event_type "$event_type" \
+            --arg repository "$SOURCE_REPOSITORY" \
+            --arg sha "$SOURCE_SHA" \
+            --arg ref "$SOURCE_REF" \
+            --arg source_event "$SOURCE_EVENT" \
+            --argjson pr_number "$pr_number" \
+            --arg pr_url "$SOURCE_PR_URL" \
+            '{
+              event_type: $event_type,
+              client_payload: {
+                repository: $repository,
+                sha: $sha,
+                ref: $ref,
+                source_event: $source_event,
+                pr_number: $pr_number,
+                pr_url: $pr_url
+              }
+            }' |
+            gh api \
+              --method POST \
+              "repos/${TARGET_REPOSITORY}/dispatches" \
+              --input -
